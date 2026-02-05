@@ -6,10 +6,17 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "tifffile",
+    "pillow",
 ]
+
+[project.optional-dependencies]
+build = ["pyinstaller"]
 
 [project.scripts]
 ris2tiff = "ris2tiff.converter:main"
+
+[project.gui-scripts]
+ris2tiff-gui = "ris2tiff.gui:main"
 
 [build-system]
 requires = ["hatchling"]
