@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-build = ["pyinstaller"]
+dev = ["pyinstaller"]
 
 [project.scripts]
 ris2tiff = "ris2tiff.converter:main"

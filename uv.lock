@@ -268,7 +268,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-build = [
+dev = [
     { name = "pyinstaller" },
 ]
 
@@ -276,10 +276,10 @@ build = [
 requires-dist = [
     { name = "numpy" },
     { name = "pillow" },
-    { name = "pyinstaller", marker = "extra == 'build'" },
+    { name = "pyinstaller", marker = "extra == 'dev'" },
     { name = "tifffile" },
 ]
-provides-extras = ["build"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "setuptools"
