@@ -1,0 +1,16 @@
+[project]
+name = "ris2tiff"
+version = "0.1.0"
+description = "Converter from RIS (Reversa 3D scanner) to TIFF 32-bit grayscale"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "tifffile",
+]
+
+[project.scripts]
+ris2tiff = "ris2tiff.converter:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
