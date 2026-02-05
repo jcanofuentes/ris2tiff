@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 import time
 
-from ris2tiff.converter import convert_ris_to_tiff, RIS_DEFAULT_WIDTH
+from ris2tiff.converter import convert_ris_to_tiff
 
 
 class App:
@@ -39,7 +39,7 @@ class App:
         rotate_menu.config(width=3)
         rotate_menu.pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(right, text="Width:").pack(side=tk.LEFT)
-        self.width_var = tk.StringVar(value=str(RIS_DEFAULT_WIDTH))
+        self.width_var = tk.StringVar(value="auto")
         tk.Entry(right, textvariable=self.width_var, width=6).pack(side=tk.LEFT)
 
         # Light settings row
@@ -95,9 +95,10 @@ class App:
 
     def _convert_thread(self):
         try:
-            width = int(self.width_var.get())
+            width_str = self.width_var.get().strip().lower()
+            width = None if width_str == "auto" else int(width_str)
         except ValueError:
-            self.root.after(0, self._log, "[ERROR] Invalid width value")
+            self.root.after(0, self._log, "[ERROR] Invalid width value (use 'auto' or a number)")
             self.root.after(0, lambda: self.convert_btn.config(state=tk.NORMAL))
             return
 
@@ -120,7 +121,6 @@ class App:
 
         for f in self.files:
             self.root.after(0, self._log, f"--- {f.name} ---")
-            self.root.after(0, lambda t=f.name: self.root.title(f"ris2tiff - Converting {t}"))
             time.sleep(0.15)  # let the UI update before heavy work
 
             try:
@@ -133,7 +133,6 @@ class App:
             except Exception as e:
                 self.root.after(0, self._log, f"[ERROR] {e}")
 
-        self.root.after(0, lambda: self.root.title("ris2tiff"))
         self.root.after(0, self._log, "--- Done ---")
         self.root.after(0, lambda: self.convert_btn.config(state=tk.NORMAL))
 

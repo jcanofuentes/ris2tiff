@@ -1,27 +1,54 @@
 """RIS (Reversa 3D scanner) to TIFF 32-bit grayscale converter.
 
 RIS file format (reverse-engineered):
-- Header: 88 bytes
+
+Header (88 bytes):
   - Bytes 0-3: Magic "RIS\\0"
   - Bytes 4-5: Byte order "II" (little-endian)
+  - Bytes 6-7: uint16, unknown (observed: 0x0009 = 2304)
   - Bytes 8-11: uint32, unknown (observed: 13)
-  - Bytes 12-15: uint32, total data size in bytes (file_size - 156)
-  - Bytes 16-51: Bounding box (3 corners, 3 floats each)
+  - Bytes 12-15: uint32, data payload size in bytes (= width * height * 4)
+  - Bytes 16-51: Bounding box (3 corners, 3 floats each, in mm)
     Corner 1 (x_min, y_min, z): bytes 16-27
     Corner 2 (x_max, y_min, z): bytes 28-39
     Corner 3 (x_min, y_max, z): bytes 40-51
-  - Bytes 64-67: float32, step/resolution
+  - Bytes 52-63: zeros (reserved)
+  - Bytes 64-67: float32, step/resolution (mm)
+  - Bytes 68-79: zeros (reserved)
   - Bytes 80-83: float32, range
   - Bytes 84-87: float32, offset
-- Data: float32 little-endian, row-major, starting at offset 88
-  - Default row width: 5201
-  - Number of rows: total_floats // width
-  - Null marker: -3.37e+38
+
+Data (starts at offset 88):
+  - float32 little-endian, row-major
+  - Null marker: -3.37e+38 (0xff7d87d7 as uint32)
   - Native units: millimeters (pixel pitch ~0.1mm, Z in mm)
-- No footer (data extends to end of file)
+
+Footer (68 bytes = 17 uint32, at end of file):
+  The footer uses a tag-value structure. Tag IDs are stable across files;
+  values vary per scan. Layout (0-based uint32 index from footer start):
+
+  [0]  pixel_count     width * height
+  [1]  header_size     88 (constant)
+  [2]  tag 0x00050fa2  (331682)
+  [3]  unknown         observed: height * 6
+  [4]  data_bytes      width * height * 4 (matches header field at byte 12)
+  [5]  tag 0x00050fa3  (331683)
+  [6]  1               (count/flag)
+  [7]  null_marker     0xff7d87d7 (-3.37e+38 as float32)
+  [8]  tag 0x00050fa7  (331687)
+  [9]  1               (count/flag)
+  [10] scale_factor    0x3f800000 (1.0 as float32)
+  [11] tag 0x00040fa8  (266152)
+  [12] 1               (count/flag)
+  [13] height          image height in pixels
+  [14] tag 0x00040fa9  (266153)
+  [15] 1               (count/flag)
+  [16] width           image width in pixels
+
+  Total file size = 88 (header) + width*height*4 (data) + 68 (footer).
 
 Output convention:
-- TIFF: Z values in meters
+- TIFF: Z values in meters (mm / 1000)
 - TFW: pixel size 0.0001m (= 0.1mm), bounding box in meters
 """
 
@@ -35,6 +62,7 @@ from PIL import Image
 
 # RIS format constants
 RIS_HEADER_SIZE = 88
+RIS_FOOTER_SIZE = 68  # 17 uint32 values
 RIS_DEFAULT_WIDTH = 5201
 RIS_NULL_MARKER = -3.37e+38
 MM_TO_M = 0.001
@@ -70,12 +98,46 @@ def parse_ris_header(filepath: Path) -> dict:
     }
 
 
-def read_ris(filepath: Path, width: int = RIS_DEFAULT_WIDTH) -> tuple[np.ndarray, dict]:
+def parse_ris_footer(filepath: Path) -> dict:
+    """Parse RIS footer (last 68 bytes) to extract width and height.
+
+    Returns dict with keys: width, height, pixel_count.
+    Raises ValueError if footer structure is not recognized.
+    """
+    filepath = Path(filepath)
+    fsize = filepath.stat().st_size
+
+    if fsize < RIS_HEADER_SIZE + RIS_FOOTER_SIZE:
+        raise ValueError(f"File too small for RIS footer ({fsize} bytes)")
+
+    with open(filepath, "rb") as f:
+        f.seek(fsize - RIS_FOOTER_SIZE)
+        footer = f.read(RIS_FOOTER_SIZE)
+
+    vals = struct.unpack_from("<17I", footer, 0)
+
+    # Validate known constants
+    if vals[1] != RIS_HEADER_SIZE:
+        raise ValueError(f"Footer header_size field is {vals[1]}, expected {RIS_HEADER_SIZE}")
+
+    width = vals[16]
+    height = vals[13]
+    pixel_count = vals[0]
+
+    if width * height != pixel_count:
+        raise ValueError(
+            f"Footer inconsistent: w={width} * h={height} = {width * height} != pixel_count={pixel_count}"
+        )
+
+    return {"width": width, "height": height, "pixel_count": pixel_count}
+
+
+def read_ris(filepath: Path, width: int | None = None) -> tuple[np.ndarray, dict]:
     """Read RIS file and return float32 height map + header metadata.
 
     Args:
         filepath: Path to the RIS file.
-        width: Row width in pixels. Default 5201 (Reversa standard).
+        width: Row width in pixels. If None, auto-detected from footer.
 
     Returns:
         Tuple of (2D numpy array float32, header metadata dict).
@@ -84,9 +146,25 @@ def read_ris(filepath: Path, width: int = RIS_DEFAULT_WIDTH) -> tuple[np.ndarray
     filepath = Path(filepath)
     meta = parse_ris_header(filepath)
 
+    # Auto-detect width from footer if not specified
+    if width is None:
+        try:
+            footer = parse_ris_footer(filepath)
+            width = footer["width"]
+            height = footer["height"]
+            print(f"[INFO] Auto-detected from footer: {width} x {height}")
+        except ValueError as e:
+            width = RIS_DEFAULT_WIDTH
+            print(f"[WARN] Footer parse failed ({e}), using default width {width}")
+
+    # Read data payload (exclude 68-byte footer)
+    fsize = filepath.stat().st_size
+    data_bytes = fsize - RIS_HEADER_SIZE - RIS_FOOTER_SIZE
+    data_floats = data_bytes // 4
+
     with open(filepath, "rb") as f:
         f.seek(RIS_HEADER_SIZE)
-        data = np.fromfile(f, dtype=np.float32)
+        data = np.fromfile(f, dtype=np.float32, count=data_floats)
 
     total_floats = len(data)
     rows = total_floats // width
@@ -205,7 +283,7 @@ def render_preview(
 def convert_ris_to_tiff(
     input_path: Path,
     output_path: Path | None = None,
-    width: int = RIS_DEFAULT_WIDTH,
+    width: int | None = None,
     rotate: int = 0,
     azimuth: float = 315.0,
     elevation: float = 45.0,
@@ -275,8 +353,8 @@ def main():
         "-w",
         "--width",
         type=int,
-        default=RIS_DEFAULT_WIDTH,
-        help=f"Row width in pixels (default: {RIS_DEFAULT_WIDTH})",
+        default=None,
+        help=f"Row width in pixels (default: auto-detect from footer)",
     )
     parser.add_argument(
         "-r",
